@@ -271,7 +271,10 @@ impl ExtractionProfile {
         preserve_tags: &[],
         min_paragraph_density: 0.3,
         boilerplate_selectors: &[],
-        aggregate_sections: false,
+        // Collection/category pages frequently scatter their real body (SEO
+        // description + FAQ) across sibling sections while a single product grid
+        // wins selection — enable section merging to recover the prose body.
+        aggregate_sections: true,
         collect_repeated_items: false,
     };
 
