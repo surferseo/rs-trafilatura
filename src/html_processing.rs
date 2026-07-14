@@ -370,7 +370,15 @@ pub fn prune_html(doc: &Document, opts: &Options) {
 
         // Remove if empty (no children and no text content)
         if children.is_empty() && text.trim().is_empty() && tail.trim().is_empty() {
-            etree::remove(&sel, keep_tail);
+            if text.is_empty() {
+                etree::remove(&sel, keep_tail);
+            } else {
+                // Whitespace-only element (e.g. Webflow's `<span>&nbsp;</span>`)
+                // still renders as a word separator — leave a single space
+                // behind so the surrounding words don't fuse.
+                etree::set_text(&sel, " ");
+                etree::strip(&sel);
+            }
         }
     }
 }
@@ -1110,6 +1118,27 @@ mod tests {
     use crate::options::Options;
 
     // Note: link_density_test* tests moved to src/link_density.rs
+
+    #[test]
+    fn test_prune_html_keeps_space_for_whitespace_only_elements() {
+        // Webflow rich text encodes inter-word spaces as `<span>&nbsp;</span>`;
+        // pruning it without a trace would fuse the surrounding words.
+        let html = r#"<html><body><p>is that<span>&nbsp;</span><em>actually</em> true</p><p><strong>mean?<span>&nbsp;</span></strong>It means</p></body></html>"#;
+        let doc = dom::parse(html);
+        let opts = Options::default();
+
+        prune_html(&doc, &opts);
+
+        let body = doc.select("body").html();
+        assert!(
+            body.contains("is that <em>actually</em> true"),
+            "got: {body}"
+        );
+        assert!(
+            body.contains("<strong>mean? </strong>It means"),
+            "got: {body}"
+        );
+    }
 
     #[test]
     fn test_text_chars_test() {

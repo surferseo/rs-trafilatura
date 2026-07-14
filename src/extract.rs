@@ -3660,7 +3660,7 @@ fn normalize_text_output(input: &str) -> String {
                 out.push('\n');
                 pending_space = false;
             }
-            '\t' | ' ' => {
+            '\t' | ' ' | '\u{a0}' => {
                 pending_space = true;
             }
             '.' | ',' | ';' | ':' | '!' | '?' => {

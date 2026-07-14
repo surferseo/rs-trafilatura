@@ -149,3 +149,50 @@ fn extract_preserves_b_and_i_tags() {
         Err(err) => panic!("expected Ok(_), got Err({err:?})"),
     }
 }
+
+// Webflow rich text encodes inter-word spaces as `<span>&nbsp;</span>`. Dropping
+// the span without leaving a space glues the surrounding words together.
+#[test]
+fn extract_preserves_word_separation_from_nbsp_only_spans() {
+    let html = format!(
+        r#"<article>
+        <p>is that<span>&nbsp;</span><em>actually</em> true or a hangover assumption</p>
+        <p><strong>What does this mean?<span>&nbsp;</span></strong>It means we split all sources</p>
+        <p>PageRank from Common<span>&nbsp;</span>Crawl and Domain Score from Surfer</p>
+        <p><strong><em>NOTE.</em></strong><span>&nbsp;</span><em>This data has top domains removed</em></p>
+        {PADDING}</article>"#
+    );
+    let result = extract(&html);
+    match result {
+        Ok(result) => {
+            let content_html = result
+                .content_html
+                .as_deref()
+                .expect("expected Some(content_html)");
+
+            // A word boundary must survive at each junction (space or &nbsp;),
+            // both in the HTML output and in the rendered text.
+            assert!(
+                !content_html.contains("that<em>"),
+                "text→<em> junction lost its space: {content_html}"
+            );
+            assert!(
+                !content_html.contains("mean?</strong>It"),
+                "</strong>→text junction lost its space: {content_html}"
+            );
+            assert!(
+                !content_html.contains("CommonCrawl"),
+                "text→text junction lost its space: {content_html}"
+            );
+            assert!(
+                !content_html.contains("</strong><em>"),
+                "</strong>→<em> junction lost its space: {content_html}"
+            );
+
+            assert!(result.content_text.contains("that actually"));
+            assert!(result.content_text.contains("mean? It"));
+            assert!(result.content_text.contains("Common Crawl"));
+        }
+        Err(err) => panic!("expected Ok(_), got Err({err:?})"),
+    }
+}
