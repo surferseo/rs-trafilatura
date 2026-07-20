@@ -889,3 +889,66 @@ fn images_appear_in_markdown_output() {
 
     assert!(content_md.contains("![A photo](https://example.com/photo.jpg)"), "Markdown should contain image: {content_md}");
 }
+
+/// Lazy-loaded images (placeholder data: URI in src, real URL in data-src)
+/// must resolve to the real URL in content_html.
+#[test]
+fn content_html_resolves_lazy_image_src() {
+    let html = r#"
+        <html><body>
+            <article>
+                <p>Long enough article text about data migration and switching plans.</p>
+                <img class="size-full perfmatters-lazy" src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='46'%20height='46'%3E%3C/svg%3E" alt="Accounting" width="46" height="46" data-src="https://example.com/uploads/Accounting-1.png">
+                <p>More text following the image to keep extraction going strong.</p>
+                <p>Additional paragraph with enough text to satisfy content scoring.</p>
+            </article>
+        </body></html>
+    "#;
+
+    let options = Options {
+        include_images: true,
+        include_links: true,
+        ..Options::default()
+    };
+
+    let result = extract_with_options(html, &options).expect("extraction failed");
+    let content_html = result.content_html.expect("content_html should exist");
+
+    assert!(
+        content_html.contains(r#"src="https://example.com/uploads/Accounting-1.png""#),
+        "content_html should use the data-src URL: {content_html}"
+    );
+    assert!(
+        !content_html.contains("data:image/svg"),
+        "content_html should not keep the lazy placeholder: {content_html}"
+    );
+}
+
+/// A genuine inline data: image with no lazy-load attributes keeps its src.
+#[test]
+fn content_html_keeps_inline_data_image_without_lazy_attrs() {
+    let html = r#"
+        <html><body>
+            <article>
+                <p>Long enough article text about embedded inline images in pages.</p>
+                <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg" alt="Inline">
+                <p>More text following the image to keep extraction going strong.</p>
+                <p>Additional paragraph with enough text to satisfy content scoring.</p>
+            </article>
+        </body></html>
+    "#;
+
+    let options = Options {
+        include_images: true,
+        include_links: true,
+        ..Options::default()
+    };
+
+    let result = extract_with_options(html, &options).expect("extraction failed");
+    let content_html = result.content_html.expect("content_html should exist");
+
+    assert!(
+        content_html.contains(r#"src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg""#),
+        "content_html should keep a real inline data image: {content_html}"
+    );
+}

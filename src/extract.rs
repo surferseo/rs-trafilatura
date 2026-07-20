@@ -3288,7 +3288,12 @@ fn push_filtered_html_children(
                 out.push('>');
             } else if tag == "img" {
                 out.push_str("<img");
-                if let Some(src) = el.attr("src") {
+                // Prefer the resolved URL (handles lazy-load schemes where src
+                // is a placeholder and the real URL sits in data-src/srcset);
+                // fall back to the raw src so genuine inline data: images keep
+                // working.
+                let src = resolve_img_src(&el).or_else(|| el.attr("src").map(|s| s.to_string()));
+                if let Some(src) = src {
                     out.push_str(" src=\"");
                     out.push_str(&escape_html(&src));
                     out.push('"');
