@@ -551,6 +551,35 @@ pub(crate) fn extract_content(html: &str, options: &Options) -> Result<ExtractRe
         }
     }
 
+    // H1 guarantee: the article headline often lives in a hero/header section
+    // outside the selected content subtree (and in-body h1s duplicating the
+    // page title are deliberately skipped during the tree walk), so extractions
+    // can lose the h1 entirely. When the source document has an h1 but the
+    // extracted content doesn't, prepend it so the headline is part of the output.
+    // The html and text outputs are guarded independently: the tree walk and the
+    // fallback paths can drop the h1 from one output but not the other, and each
+    // must end up containing the headline exactly once.
+    if !content_text.trim().is_empty() {
+        if let Some(h1_text) = source_h1_text(&doc_backup, metadata.title.as_deref()) {
+            let html_has_h1 = content_html
+                .as_deref()
+                .is_some_and(|h| Document::from(h).select("h1").exists());
+            let text_has_headline =
+                normalize_title(&content_text).contains(&normalize_title(&h1_text));
+            if !html_has_h1 {
+                if let Some(html) = content_html.as_mut() {
+                    *html = format!("<h1>{}</h1>\n{html}", escape_html(&h1_text));
+                }
+            }
+            if !text_has_headline {
+                content_text = format!("{h1_text}\n\n{content_text}");
+            }
+            if !html_has_h1 || !text_has_headline {
+                warnings.push("Prepended source h1 missing from extraction".to_string());
+            }
+        }
+    }
+
     // Compute extraction quality confidence
     let extraction_quality = compute_extraction_quality_heuristic(
         &content_text,
@@ -4578,6 +4607,29 @@ fn clean_text(s: &str) -> String {
     s.trim().to_string()
 }
 
+/// Find the headline h1 in the source document.
+///
+/// Prefers an h1 whose text matches the page title (the actual headline) over
+/// the first h1, which can be a logo or site name on some layouts.
+fn source_h1_text(doc: &Document, page_title: Option<&str>) -> Option<String> {
+    let mut first_non_empty: Option<String> = None;
+    for node in doc.select("h1").nodes() {
+        let text = clean_text(&dom::text_content(&Selection::from(*node)));
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(title) = page_title {
+            if titles_match(&text, title) {
+                return Some(text);
+            }
+        }
+        if first_non_empty.is_none() {
+            first_non_empty = Some(text);
+        }
+    }
+    first_non_empty
+}
+
 /// Check if an h1 heading matches the page title.
 /// Handles common title patterns like "Article Title - Site Name" or "Article Title | Site".
 fn titles_match(heading: &str, page_title: &str) -> bool {
@@ -4726,6 +4778,125 @@ mod tests {
             }
             Err(err) => panic!("expected Ok(_), got Err({err:?})"),
         }
+    }
+
+    #[test]
+    fn extract_prepends_h1_when_headline_is_outside_main_content() {
+        // Headline lives in a hero section OUTSIDE the article body (common on
+        // marketing/blog layouts) — the selected content subtree never contains it.
+        let html = r"
+            <html>
+            <head><title>Is ChatGPT a Search Engine? | Surfer</title></head>
+            <body>
+                <section class='hero'>
+                    <h1>Is ChatGPT a Search Engine?</h1>
+                    <div>Written by Someone</div>
+                </section>
+                <main>
+                    <article>
+                        <h2>Every few years, SEO gets a new name.</h2>
+                        <p>Search behavior has shifted dramatically over the last few years as more people turn to conversational assistants for answers.</p>
+                        <p>ChatGPT behaves like a search engine for most users, and the technical differences matter mainly because they tell you where effort should go.</p>
+                        <h2>How language models find information</h2>
+                        <p>Large language models query traditional search indexes in the background and then rephrase what they find into a conversational answer.</p>
+                        <p>Ranking in the classic index therefore remains the prerequisite for visibility inside AI-generated answers and summaries.</p>
+                        <p>Publishers who understand this relationship can adapt their strategy without abandoning the fundamentals that already work today.</p>
+                    </article>
+                </main>
+            </body>
+            </html>
+        ";
+
+        let options = Options {
+            output_markdown: true,
+            ..Options::default()
+        };
+        let result = extract_content(html, &options).expect("extraction should succeed");
+
+        let content_html = result.content_html.expect("content_html should be present");
+        assert!(
+            content_html.contains("<h1>Is ChatGPT a Search Engine?</h1>"),
+            "content_html should contain the input h1; got: {content_html}"
+        );
+        assert!(
+            result.content_text.starts_with("Is ChatGPT a Search Engine?"),
+            "content_text should start with the headline; got: {:?}",
+            &result.content_text[..result.content_text.len().min(120)]
+        );
+        let markdown = result.content_markdown.expect("markdown should be present");
+        assert!(
+            markdown.starts_with("# Is ChatGPT a Search Engine?"),
+            "markdown should start with an h1; got: {:?}",
+            &markdown[..markdown.len().min(120)]
+        );
+    }
+
+    #[test]
+    fn extract_does_not_add_h1_when_input_has_none() {
+        let html = r"
+            <html>
+            <head><title>Some Page Title</title></head>
+            <body>
+                <article>
+                    <h2>A Section Heading</h2>
+                    <p>Search behavior has shifted dramatically over the last few years as more people turn to conversational assistants for answers.</p>
+                    <p>ChatGPT behaves like a search engine for most users, and the technical differences matter mainly because they tell you where effort should go.</p>
+                    <p>Large language models query traditional search indexes in the background and then rephrase what they find into a conversational answer.</p>
+                    <p>Ranking in the classic index therefore remains the prerequisite for visibility inside AI-generated answers and summaries.</p>
+                </article>
+            </body>
+            </html>
+        ";
+
+        let result =
+            extract_content(html, &Options::default()).expect("extraction should succeed");
+        let content_html = result.content_html.expect("content_html should be present");
+        assert!(
+            !content_html.contains("<h1"),
+            "no h1 should be added when the input has none; got: {content_html}"
+        );
+        assert!(
+            !result.content_text.contains("Some Page Title"),
+            "page title should not be prepended when the input has no h1; got: {:?}",
+            &result.content_text[..result.content_text.len().min(120)]
+        );
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.contains("Prepended source h1")),
+            "no h1-prepend warning expected; got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn extract_does_not_duplicate_h1_already_in_content() {
+        // The h1 is inside the article body and does NOT match the page title,
+        // so the tree walk keeps it — no second h1 should be prepended.
+        let html = r"
+            <html>
+            <head><title>Some Completely Different Page Title</title></head>
+            <body>
+                <article>
+                    <h1>A Standalone Body Heading</h1>
+                    <p>Search behavior has shifted dramatically over the last few years as more people turn to conversational assistants for answers.</p>
+                    <p>ChatGPT behaves like a search engine for most users, and the technical differences matter mainly because they tell you where effort should go.</p>
+                    <p>Large language models query traditional search indexes in the background and then rephrase what they find into a conversational answer.</p>
+                    <p>Ranking in the classic index therefore remains the prerequisite for visibility inside AI-generated answers and summaries.</p>
+                </article>
+            </body>
+            </html>
+        ";
+
+        let result =
+            extract_content(html, &Options::default()).expect("extraction should succeed");
+        let content_html = result.content_html.expect("content_html should be present");
+        assert_eq!(
+            content_html.matches("<h1").count(),
+            1,
+            "content_html should contain exactly one h1; got: {content_html}"
+        );
     }
 
     #[test]
